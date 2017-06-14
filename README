@@ -1,0 +1,20 @@
+How to run:
+  Run ./train.sh to train
+  Run ./sample to generate bible
+  See example and source code (train.py, sample.py) for further details.
+
+Training general guidelines:
+
+Hyperparameters obtained by trial and error:
+  Learning rate: ~0.002
+  Number of layers: 2
+  Learning rate decay rate: ~0.97
+
+
+RNN typical size varies from 256 to 2048, depends on computational time and desired accuracy. The higher the better but takes a longer computational time.
+ 
+Dropout typically ranges from 0 to 0.5. Increase to reduce overfitting.
+
+Number of epoch typically ~50. Increase if loss function does not converge.
+
+Batch size typically ranges from 20 to 50. Increase to speedup performance and smoothes convergence.
