@@ -11,13 +11,13 @@ NtRp4
 (dp5
 S'num_epochs'
 p6
-I1
+I50
 sS'grad_clip'
 p7
 F5
 sS'rnn_size'
 p8
-I16
+I256
 sS'data_dir'
 p9
 S'./data'
@@ -27,7 +27,7 @@ p11
 I3182
 sS'learning_rate'
 p12
-F0.002
+F0.00050000000000000001
 sS'save_dir'
 p13
 S'./saves/test_save'
@@ -52,7 +52,7 @@ S'gru'
 p21
 sS'dropout'
 p22
-F0.80000000000000004
+F0.20000000000000001
 sS'save_every'
 p23
 I1000
