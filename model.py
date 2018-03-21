@@ -23,7 +23,53 @@ class Model():
         else:
             raise Exception("model type not supported: {}".format(args.model))
 
-        #declare RNN cells
+        #declare placeholders
+        self.input_data = tf.placeholder(tf.int32, [args.batch_size, args.input_length])
+        self.target_data = tf.placeholder(tf.int32, [args.batch_size, args.seq_length])
+
+        #declare batch and epoch pointer
+        self.batch_pointer = tf.Variable(0, name="batch_pointer", trainable=False, dtype=tf.int32)
+        self.inc_batch_pointer_op = tf.assign(self.batch_pointer, self.batch_pointer + 1)
+        self.epoch_pointer = tf.Variable(0, name="epoch_pointer", trainable=False)
+
+        #declare softmax variables
+        softmax_w = tf.get_variable("softmax_w", [args.rnn_size, args.vocab_size])
+        softmax_b = tf.get_variable("softmax_b", [args.vocab_size])
+
+
+        #embedding
+        self.embedding_matrix = tf.Variable(tf.constant(0.0, shape=[args.vocab_size, args.embed_dim]),
+                        trainable=False, name="W")
+        self.embedding_placeholder = tf.placeholder(tf.float32, [args.vocab_size, args.embed_dim])
+        self.embedding_init = self.embedding_matrix.assign(self.embedding_placeholder)
+
+        with tf.device("/cpu:0"): #select one cpu for embedding lookup
+            #inputs = tf.split(tf.nn.embedding_lookup(self.embedding_matrix, self.input_data), args.seq_length, 1)
+            inputs = tf.nn.embedding_lookup(self.embedding_matrix, self.input_data)
+            targets = tf.nn.embedding_lookup(self.embedding_matrix, self.target_data)
+            #inputs = [tf.squeeze(input_, [1]) for input_ in inputs]
+
+        def encoder(inputs, args):
+            cells = []
+            for _ in range(args.num_layers):
+                cell = cell_fn(args.rnn_size, activation=tf.nn.relu)
+                cell = rnn.DropoutWrapper(cell, args.dropout)
+                cells.append(cell)
+            self.initial_state = cell.zero_state(args.batch_size, tf.float32), cell.zero_state(args.batch_size, tf.float32)
+            #self.initial_state = cell.zero_state(args.batch_size, tf.float32), cell.zero_state(args.batch_size, tf.float32)
+            self.cell = cell = rnn.MultiRNNCell(cells)
+
+            #   encoder_outputs: [max_time, batch_size, num_units]
+            #   encoder_state: [batch_size, num_units]
+            print(inputs)
+            encoder_outputs, encoder_state = tf.nn.dynamic_rnn(
+                cell, inputs, initial_state=self.initial_state,
+                sequence_length=tf.tile([args.input_length], [args.batch_size]), time_major=False)
+            return encoder_outputs, encoder_state
+
+        encoder_outputs, encoder_state = encoder(inputs, args)
+        
+        #declare decoder cells
         cells = []
         for _ in range(args.num_layers):
         		cell = cell_fn(args.rnn_size, activation=tf.nn.relu)
@@ -31,38 +77,43 @@ class Model():
         		cells.append(cell)
         self.cell = cell = rnn.MultiRNNCell(cells)
 
-        #declare placeholders
-        self.input_data = tf.placeholder(tf.int32, [args.batch_size, args.seq_length])
-        self.targets = tf.placeholder(tf.int32, [args.batch_size, args.seq_length])
-        self.initial_state = cell.zero_state(args.batch_size, tf.float32)
+        """
+        #   decoder_outputs: [max_time, batch_size, num_units]
+        #   decoder_state: [batch_size, num_units]
+        outputs, last_state = tf.nn.dynamic_rnn(
+            cell, encoder_outputs, initial_state=encoder_state, time_major=True)
+        """
 
-        #declare batch and epoch pointer
-        self.batch_pointer = tf.Variable(0, name="batch_pointer", trainable=False, dtype=tf.int32)
-        self.inc_batch_pointer_op = tf.assign(self.batch_pointer, self.batch_pointer + 1)
-        self.epoch_pointer = tf.Variable(0, name="epoch_pointer", trainable=False)
+        if not infer: #train
+          helper = tf.contrib.seq2seq.TrainingHelper(
+            inputs=targets,
+            sequence_length=tf.tile([args.seq_length], [args.batch_size]))
+        else:
+          helper = tf.contrib.seq2seq.GreedyEmbeddingHelper(
+              embedding=embedding,
+              start_tokens=tf.tile(self.embedding_matrix[1], [args.batch_size]),
+              end_token=self.embedding_matrix[2])
 
-        #with tf.variable_scope('rnnlm'):
-        softmax_w = tf.get_variable("softmax_w", [args.rnn_size, args.vocab_size])
-        softmax_b = tf.get_variable("softmax_b", [args.vocab_size])
-        with tf.device("/cpu:0"): #select one cpu for embedding lookup
-            embedding = tf.get_variable("embedding", [args.vocab_size, args.rnn_size])
-            inputs = tf.split(tf.nn.embedding_lookup(embedding, self.input_data), args.seq_length, 1)
-            inputs = [tf.squeeze(input_, [1]) for input_ in inputs]
+        decoder = tf.contrib.seq2seq.BasicDecoder(
+            cell=cell,
+            helper=helper,
+            initial_state=cell.zero_state(args.batch_size, tf.float32))
+        outputs, last_state, _ = tf.contrib.seq2seq.dynamic_decode(
+           decoder=decoder,
+           output_time_major=False,
+           impute_finished=True,
+           maximum_iterations=args.max_length)
 
-        def loop(prev, _):
-            prev = tf.matmul(prev, softmax_w) + softmax_b
-            prev_symbol = tf.stop_gradient(tf.argmax(prev, 1))
-            return tf.nn.embedding_lookup(embedding, prev_symbol)
-
-        #outputs, last_state = legacy_seq2seq.rnn_decoder(inputs, self.initial_state, cell, loop_function=loop if infer else None, scope='rnnlm')
-        outputs, last_state = legacy_seq2seq.rnn_decoder(inputs, self.initial_state, cell, loop_function=loop if infer else None)
-
-        outputs, last_state = legacy_seq2seq.rnn_decoder(inputs, self.initial_state, cell, loop_function=None)
-        output = tf.reshape(tf.concat(outputs, 1), [-1, args.rnn_size])
+        print(outputs)
+        output = tf.reshape(tf.concat(outputs[0], 1), [-1, args.rnn_size])
         self.logits = tf.matmul(output, softmax_w) + softmax_b
         self.probs = tf.nn.softmax(self.logits)
+
+        self.text_argmax = tf.stop_gradient(tf.argmax(self.probs, 1))
+        self.text_output = tf.nn.embedding_lookup(self.embedding_matrix, self.text_argmax)
+
         loss = legacy_seq2seq.sequence_loss_by_example([self.logits],
-                [tf.reshape(self.targets, [-1])],
+                [tf.reshape(self.target_data, [-1])],
                 [tf.ones([args.batch_size * args.seq_length])],
                 args.vocab_size)
         self.cost = tf.reduce_sum(loss) / args.batch_size / args.seq_length
@@ -104,7 +155,7 @@ class Model():
             p = probs[0]
             sample = weighted_pick(p)
             pred = words[sample]
-            ret += pred.encode('utf-8')
+            ret += pred
             word = pred
 
         return ret

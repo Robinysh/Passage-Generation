@@ -5,7 +5,7 @@ import tensorflow as tf
 import argparse
 import time
 import os
-from six.moves import cPickle
+import pickle as pkl
 
 from utils import TextLoader
 from model import Model
@@ -13,19 +13,27 @@ from model import Model
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_dir', type=str, default='./data',
-                       help='data directory containing corpus.txt')
-    parser.add_argument('--save_dir', type=str, default='./save',
+                       help='data directory containing corpus.pkl')
+    parser.add_argument('--save_dir', type=str, default='./saves',
                        help='directory to store checkpointed models')
     parser.add_argument('--rnn_size', type=int, default=256,
                        help='size of RNN hidden state')
     parser.add_argument('--num_layers', type=int, default=2,
                        help='number of layers in the RNN')
+    parser.add_argument('--embed_dir', type=str, default='./glove',
+                       help='directory containing GloVe txt files')
+    parser.add_argument('--embed_dim', type=int, default=100,
+                       help='dimensions of word embedding')
     parser.add_argument('--model', type=str, default='gru',
                        help='rnn, gru, or lstm')
-    parser.add_argument('--batch_size', type=int, default=50,
+    parser.add_argument('--batch_size', type=int, default=64,
                        help='minibatch size')
-    parser.add_argument('--seq_length', type=int, default=25,
+    parser.add_argument('--max_length', type=int, default=100,
+                       help='generated sequence max length')
+    parser.add_argument('--seq_length', type=int, default=50,
                        help='RNN sequence length')
+    parser.add_argument('--input_length', type=int, default=10,
+                       help='RNN input length')
     parser.add_argument('--num_epochs', type=int, default=50,
                        help='number of epochs')
     parser.add_argument('--save_every', type=int, default=1000,
@@ -50,8 +58,12 @@ def main():
     train(args)
 
 def train(args):
-    data_loader = TextLoader(args.data_dir, args.batch_size, args.seq_length)
+    assert os.path.isfile(os.path.join(args.embed_dir, "glove.6B.{}d.txt".format(args.embed_dim))), 'No GloVe file with {} dimensions found'.format(args.embed_dim) 
+
+    data_loader = TextLoader(args.data_dir, args.batch_size, args.seq_length, args.input_length, args.embed_dim, args.embed_dir)
     args.vocab_size = data_loader.vocab_size
+    embedding_matrix = data_loader.embedding_matrix 
+    
 
     # check compatibility if training is continued from previously saved model
     if args.init_from is not None:
@@ -65,23 +77,23 @@ def train(args):
 
         # open old config and check if models are compatible
         with open(os.path.join(args.init_from, 'config.pkl'), 'rb') as f:
-            saved_model_args = cPickle.load(f)
+            saved_model_args = pkl.load(f)
         need_be_same=["model","rnn_size","num_layers","seq_length"]
         for checkme in need_be_same:
             assert vars(saved_model_args)[checkme]==vars(args)[checkme],"Command line argument and saved model disagree on '%s' "%checkme
 
         # open saved vocab/dict and check if vocabs/dicts are compatible
         with open(os.path.join(args.init_from, 'words_vocab.pkl'), 'rb') as f:
-            saved_words, saved_vocab = cPickle.load(f)
+            saved_words, saved_vocab = pkl.load(f)
         assert saved_words==data_loader.words, "Data and loaded model disagree on word set!"
         assert saved_vocab==data_loader.vocab, "Data and loaded model disagree on dictionary mappings!"
 
     #save configs 
     with open(os.path.join(args.save_dir, 'config.pkl'), 'wb') as f:
-        cPickle.dump(args, f)
+        pkl.dump(args, f)
     #save word list
     with open(os.path.join(args.save_dir, 'words_vocab.pkl'), 'wb') as f:
-        cPickle.dump((data_loader.words, data_loader.vocab), f)
+        pkl.dump((data_loader.words, data_loader.vocab), f)
 
     model = Model(args)
 
@@ -92,6 +104,9 @@ def train(args):
         if args.init_from is not None:
             saver.restore(sess, ckpt.model_checkpoint_path)
 
+        #feed pretrained embeddings
+        sess.run(model.embedding_init, feed_dict={model.embedding_placeholder: embedding_matrix})
+        
         #loop through epoches
         for e in range(model.epoch_pointer.eval(), args.num_epochs):
             sess.run(tf.assign(model.lr, args.learning_rate * (args.decay_rate ** e)))
@@ -111,7 +126,7 @@ def train(args):
             for b in range(data_loader.pointer, data_loader.num_batches):
                 start = time.time()
                 x, y = data_loader.next_batch()
-                feed = {model.input_data: x, model.targets: y, model.initial_state: state}
+                feed = {model.input_data: x, model.target_data: y, model.initial_state: state}
                 train_loss, state, _, _ = sess.run([model.cost, model.final_state,
                                                              model.train_op, model.inc_batch_pointer_op], feed)
                 speed = time.time() - start
