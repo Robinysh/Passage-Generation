@@ -1,3 +1,8 @@
+Todo:
+Add test set
+validate inference
+Obtain baseline
+
 How to run:
   Run ./train.sh to train
   Run ./sample to generate bible
